@@ -155,6 +155,9 @@ RaptorDbwCAN::RaptorDbwCAN(
   sub_gear_ = this->create_subscription<GearCmd>(
     "gear_cmd", 1, std::bind(&RaptorDbwCAN::recvGearCmd, this, std::placeholders::_1));
 
+  sub_imu_latency_ = this->create_subscription<TimeReference>(
+    "imu_latency_cmd", 1, std::bind(&RaptorDbwCAN::recvImuLatencyCmd, this, std::placeholders::_1));
+
   sub_imu_ = this->create_subscription<Imu>(
     "imu_cmd", 1, std::bind(&RaptorDbwCAN::recvImuCmd, this, std::placeholders::_1));
 
@@ -622,6 +625,8 @@ void RaptorDbwCAN::recvImuRpt(const Frame::SharedPtr msg)
   if (msg->dlc >= message->GetDlc()) {
     message->SetFrame(msg);
 
+    std::lock_guard<std::mutex> guard_imu_rpt(m_imu_rpt_mutex);
+
     m_imu_rpt.header.stamp = msg->header.stamp;
     m_imu_rpt.header.frame_id = frame_id_;
 
@@ -662,6 +667,8 @@ void RaptorDbwCAN::recvImu2Rpt(const Frame::SharedPtr msg)
 
   if (msg->dlc >= message->GetDlc()) {
     message->SetFrame(msg);
+
+    std::lock_guard<std::mutex> guard_imu_rpt(m_imu_rpt_mutex);
 
     // ROS spec for their IMU message specifies angular velocity = rads/sec
     // J1939 message spec requires deg/sec
@@ -1210,6 +1217,22 @@ void RaptorDbwCAN::recvGlobalEnableCmd(const GlobalEnableCmd::SharedPtr msg)
   pub_can_->publish(frame);
 }
 
+void RaptorDbwCAN::recvImuLatencyCmd(const TimeReference::SharedPtr msg)
+{
+  if (enabled()) {
+    // Calculate latency
+    rclcpp::Time curr_time = m_clock.now();
+
+    if (curr_time > msg->time_ref) { // Check if header time is valid
+      rclcpp::Duration latency_nsec = curr_time - msg->time_ref;
+
+      std::lock_guard<std::mutex> guard_imu_latency(m_imu_latency_msec_mutex);
+      m_imu_latency_msec = latency_nsec.nanoseconds() / 1000.0F;
+      m_seen_imu_latency = true;
+    }
+  }
+}
+
 void RaptorDbwCAN::recvImuCmd(const Imu::SharedPtr msg)
 {
   NewEagle::DbcMessage * msg_accel = dbwDbc_.GetMessage("AKit_ACCS");
@@ -1235,24 +1258,20 @@ void RaptorDbwCAN::recvImuCmd(const Imu::SharedPtr msg)
     msg_rotate->GetSignal("RollRateExRange")->SetResult(msg->angular_velocity.x);
     msg_rotate->GetSignal("PitchRateExRange")->SetResult(msg->angular_velocity.y * -1);
 
-    // Calculate latency
-    rclcpp::Time curr_time = m_clock.now();
-    double latency_msec = 0.0F;
-
-    if (curr_time > msg->header.stamp) { // Check if header time is valid
-      rclcpp::Duration latency_nsec = curr_time - msg->header.stamp;
-      latency_msec = latency_nsec.nanoseconds() / 1000.0F;
+    std::lock_guard<std::mutex> guard_imu_latency(m_imu_latency_msec_mutex);
+    if (m_seen_imu_latency) {
+      msg_rotate->GetSignal("AngularRateMeasurementLatency")->SetResult(m_imu_latency_msec);
     }
-
-    msg_rotate->GetSignal("AngularRateMeasurementLatency")->SetResult(latency_msec);
   }
 
   // Publish both messages
   Frame frame1 = msg_accel->GetFrame();
   pub_can_->publish(frame1);
 
-  Frame frame2 = msg_rotate->GetFrame();
-  pub_can_->publish(frame2);
+  if (m_seen_imu_latency) {
+    Frame frame2 = msg_rotate->GetFrame();
+    pub_can_->publish(frame2);
+  }
 }
 
 void RaptorDbwCAN::recvMiscCmd(const MiscCmd::SharedPtr msg)
