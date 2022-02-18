@@ -155,7 +155,7 @@ RaptorDbwCAN::RaptorDbwCAN(
   sub_gear_ = this->create_subscription<GearCmd>(
     "gear_cmd", 1, std::bind(&RaptorDbwCAN::recvGearCmd, this, std::placeholders::_1));
 
-  sub_imu_latency_ = this->create_subscription<TimeReference>(
+  sub_imu_latency_ = this->create_subscription<Duration>(
     "imu_latency_cmd", 1, std::bind(&RaptorDbwCAN::recvImuLatencyCmd, this, std::placeholders::_1));
 
   sub_imu_ = this->create_subscription<Imu>(
@@ -1217,19 +1217,14 @@ void RaptorDbwCAN::recvGlobalEnableCmd(const GlobalEnableCmd::SharedPtr msg)
   pub_can_->publish(frame);
 }
 
-void RaptorDbwCAN::recvImuLatencyCmd(const TimeReference::SharedPtr msg)
+void RaptorDbwCAN::recvImuLatencyCmd(const Duration::SharedPtr msg)
 {
   if (enabled()) {
-    // Calculate latency
-    rclcpp::Time curr_time = m_clock.now();
+    // Convert latency to milliseconds
 
-    if (curr_time > msg->time_ref) { // Check if header time is valid
-      rclcpp::Duration latency_nsec = curr_time - msg->time_ref;
-
-      std::lock_guard<std::mutex> guard_imu_latency(m_imu_latency_msec_mutex);
-      m_imu_latency_msec = latency_nsec.nanoseconds() / 1000.0F;
-      m_seen_imu_latency = true;
-    }
+    std::lock_guard<std::mutex> guard_imu_latency(m_imu_latency_msec_mutex);
+    m_imu_latency_msec = static_cast<double>(msg->nanosec) / 1000.0F;
+    m_seen_imu_latency = true;
   }
 }
 

@@ -68,7 +68,7 @@
 #include <raptor_dbw_msgs/msg/wheel_position_report.hpp>
 #include <raptor_dbw_msgs/msg/wheel_speed_report.hpp>
 #include <sensor_msgs/msg/imu.hpp>
-#include <sensor_msgs/msg/time_reference.hpp>
+#include <builtin_interfaces/msg/duration.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
@@ -91,7 +91,7 @@ using namespace std::chrono_literals;  // NOLINT
 using can_msgs::msg::Frame;
 using geometry_msgs::msg::TwistStamped;
 using sensor_msgs::msg::Imu;
-using sensor_msgs::msg::TimeReference;
+using builtin_interfaces::msg::Duration;
 using sensor_msgs::msg::JointState;
 using std_msgs::msg::Bool;
 using std_msgs::msg::Empty;
@@ -308,10 +308,10 @@ private:
  */
   void recvGlobalEnableCmd(const GlobalEnableCmd::SharedPtr msg);
 
-/** \brief Convert an IMU timestamp into a latency measurement & send it over CAN.
- * \param[in] msg The timestamp of when the IMU measurement was taken.
+/** \brief Convert a IMU Latency duration sent as a ROS message into a CAN message.
+ * \param[in] msg The latency as a duration.
  */
-  void recvImuLatencyCmd(const TimeReference::SharedPtr msg);
+  void recvImuLatencyCmd(const Duration::SharedPtr msg);
 
 /** \brief Convert an IMU Command sent as a ROS message into CAN messages.
  * \param[in] msg The message to send over CAN.
@@ -533,7 +533,7 @@ private:
   rclcpp::Subscription<BrakeCmd>::SharedPtr sub_brake_;
   rclcpp::Subscription<GearCmd>::SharedPtr sub_gear_;
   rclcpp::Subscription<GlobalEnableCmd>::SharedPtr sub_global_enable_;
-  rclcpp::Subscription<TimeReference>::SharedPtr sub_imu_latency_;
+  rclcpp::Subscription<Duration>::SharedPtr sub_imu_latency_;
   rclcpp::Subscription<Imu>::SharedPtr sub_imu_;
   rclcpp::Subscription<MiscCmd>::SharedPtr sub_misc_;
   rclcpp::Subscription<SteeringCmd>::SharedPtr sub_steering_;
