@@ -155,7 +155,7 @@ RaptorDbwCAN::RaptorDbwCAN(
   sub_gear_ = this->create_subscription<GearCmd>(
     "gear_cmd", 1, std::bind(&RaptorDbwCAN::recvGearCmd, this, std::placeholders::_1));
 
-  sub_imu_ = this->create_subscription<ImuCmd>(
+  sub_imu_ = this->create_subscription<Imu>(
     "imu_cmd", 1, std::bind(&RaptorDbwCAN::recvImuCmd, this, std::placeholders::_1));
 
   sub_misc_ = this->create_subscription<MiscCmd>(
@@ -172,8 +172,12 @@ RaptorDbwCAN::RaptorDbwCAN(
   dbwDbc_ = NewEagle::DbcBuilder().NewDbc(dbw_dbc_file_);
 
   // Set up Timer
-  timer_ = this->create_wall_timer(
-    200ms, std::bind(&RaptorDbwCAN::timerCallback, this));
+  timer_200ms = this->create_wall_timer(
+    200ms, std::bind(&RaptorDbwCAN::timer_200ms_Callback, this));
+
+  // Set up Timeout check
+  timer_10ms_ = this->create_wall_timer(
+    10ms, std::bind(&RaptorDbwCAN::timer_10ms_Callback, this));
 }
 
 RaptorDbwCAN::~RaptorDbwCAN()
@@ -1210,7 +1214,7 @@ void RaptorDbwCAN::recvGlobalEnableCmd(const GlobalEnableCmd::SharedPtr msg)
   pub_can_->publish(frame);
 }
 
-void RaptorDbwCAN::recvImuCmd(const ImuCmd::SharedPtr msg)
+void RaptorDbwCAN::recvImuCmd(const Imu::SharedPtr msg)
 {
   NewEagle::DbcMessage * msg_accel = dbwDbc_.GetMessage("AKit_ACCS");
   NewEagle::DbcMessage * msg_rotate = dbwDbc_.GetMessage("AKit_ARI");
@@ -1226,15 +1230,28 @@ void RaptorDbwCAN::recvImuCmd(const ImuCmd::SharedPtr msg)
 
   if (enabled()) {
     msg_accel->GetSignal("VerticalAccelerationExRange")->SetResult(
-      msg->imu_cmd.linear_acceleration.z);
-    msg_accel->GetSignal("LateralAccelerationExRange")->SetResult(msg->imu_cmd.linear_acceleration.y);
+      msg->linear_acceleration.z);
+    msg_accel->GetSignal("LateralAccelerationExRange")->SetResult(msg->linear_acceleration.y);
     msg_accel->GetSignal("LongitudinalAccelerationExRange")->SetResult(
-      msg->imu_cmd.linear_acceleration.x);
+      msg->linear_acceleration.x);
 
-    msg_rotate->GetSignal("AngularRateMeasurementLatency")->SetResult(msg->imu_est_latency);
-    msg_rotate->GetSignal("YawRateExRange")->SetResult(msg->imu_cmd.angular_velocity.z * -1);
-    msg_rotate->GetSignal("RollRateExRange")->SetResult(msg->imu_cmd.angular_velocity.x);
-    msg_rotate->GetSignal("PitchRateExRange")->SetResult(msg->imu_cmd.angular_velocity.y * -1);
+    msg_rotate->GetSignal("YawRateExRange")->SetResult(msg->angular_velocity.z * -1);
+    msg_rotate->GetSignal("RollRateExRange")->SetResult(msg->angular_velocity.x);
+    msg_rotate->GetSignal("PitchRateExRange")->SetResult(msg->angular_velocity.y * -1);
+
+    // Calculate latency
+    rclcpp::Time curr_time = m_clock.now();
+    double latency_msec = 0.0F;
+
+    if (curr_time > msg->header.stamp) { // Check if header time is valid
+      rclcpp::Duration latency_nsec = curr_time - msg->header.stamp;
+      latency_msec = latency_nsec.nanoseconds() / NSEC_TO_MSEC;
+    }
+
+    msg_rotate->GetSignal("AngularRateMeasurementLatency")->SetResult(latency_msec);
+
+    // Update timestamp for timeout check
+    t_stamp_last_imu_cmd = curr_time;
   }
 
   // Publish both messages
@@ -1314,8 +1331,42 @@ bool RaptorDbwCAN::publishDbwEnabled()
   return change;
 }
 
-void RaptorDbwCAN::timerCallback()
+void RaptorDbwCAN::timer_10ms_Callback()
 {
+  // Check for timeouts
+  if (enabled()) {
+    rclcpp::Time curr_time = m_clock.now();
+
+    // Check if IMU command has timed out
+    rclcpp::Duration timeout_nsec = curr_time - t_stamp_last_imu_cmd;
+
+    if ((timeout_nsec.nanoseconds() / NSEC_TO_MSEC) > IMU_TIMEOUT_MSEC) {
+      double accel_err_val = applyScaling(0xFFFFu, 0.01F, -320.0F);
+      double ang_rate_err_val = applyScaling(0xFFFFu, 0.0078125F, -250.0F);
+      double latency_err_val = applyScaling(0xFFu, 0.5F, 0.0F);
+
+      NewEagle::DbcMessage * msg_accel = dbwDbc_.GetMessage("AKit_ACCS");
+      NewEagle::DbcMessage * msg_rotate = dbwDbc_.GetMessage("AKit_ARI");
+
+      msg_accel->GetSignal("VerticalAccelerationExRange")->SetResult(accel_err_val);
+      msg_accel->GetSignal("LateralAccelerationExRange")->SetResult(accel_err_val);
+      msg_accel->GetSignal("LongitudinalAccelerationExRange")->SetResult(accel_err_val);
+
+      msg_rotate->GetSignal("AngularRateMeasurementLatency")->SetResult(latency_err_val);
+      msg_rotate->GetSignal("YawRateExRange")->SetResult(ang_rate_err_val);
+      msg_rotate->GetSignal("RollRateExRange")->SetResult(ang_rate_err_val);
+      msg_rotate->GetSignal("PitchRateExRange")->SetResult(ang_rate_err_val);
+
+      // Publish both messages
+      pub_can_->publish(msg_accel->GetFrame());
+      pub_can_->publish(msg_rotate->GetFrame());
+    }
+  }
+}
+
+void RaptorDbwCAN::timer_200ms_Callback()
+{
+  // Check for driver overrides
   if (clear()) {
     Frame out;
     out.is_extended = false;
@@ -1537,4 +1588,12 @@ void RaptorDbwCAN::publishJointStates(
   joint_state_.header.stamp = rclcpp::Time(stamp);
   pub_joint_states_->publish(joint_state_);
 }
+
+double RaptorDbwCAN::applyScaling(uint32_t in_val, double gain, double offset)
+{
+  double out_val = static_cast<double>(in_val);
+  out_val = (out_val * gain) + offset;
+  return out_val;
+}
+
 }  // namespace raptor_dbw_can

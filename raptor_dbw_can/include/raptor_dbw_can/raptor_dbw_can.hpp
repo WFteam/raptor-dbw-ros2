@@ -56,7 +56,6 @@
 #include <raptor_dbw_msgs/msg/gps_reference_report.hpp>
 #include <raptor_dbw_msgs/msg/gps_remainder_report.hpp>
 #include <raptor_dbw_msgs/msg/hmi_global_enable_report.hpp>
-#include <raptor_dbw_msgs/msg/imu_cmd.hpp>
 #include <raptor_dbw_msgs/msg/low_voltage_system_report.hpp>
 #include <raptor_dbw_msgs/msg/misc_cmd.hpp>
 #include <raptor_dbw_msgs/msg/misc_report.hpp>
@@ -121,7 +120,6 @@ using raptor_dbw_msgs::msg::HighBeamState;
 using raptor_dbw_msgs::msg::HmiGlobalEnableReport;
 using raptor_dbw_msgs::msg::HornState;
 using raptor_dbw_msgs::msg::Ignition;
-using raptor_dbw_msgs::msg::ImuCmd;
 using raptor_dbw_msgs::msg::LowBeam;
 using raptor_dbw_msgs::msg::LowBeamState;
 using raptor_dbw_msgs::msg::LowVoltageSystemReport;
@@ -162,9 +160,14 @@ public:
 
 private:
 /** \brief If DBW is enabled && there are active driver overrides,
- *    do not send commands on the overridden system.
+ *    do not send commands on the overridden system. (200ms period)
  */
-  void timerCallback();
+  void timer_200ms_Callback();
+
+/** \brief If DBW is enabled && messages are timed out,
+ *    send error values. (10ms period)
+ */
+  void timer_10ms_Callback();
 
 /** \brief Attempt to enable the DBW system.
  * \param[in] msg Enable message (must not be null)
@@ -308,9 +311,26 @@ private:
   void recvGlobalEnableCmd(const GlobalEnableCmd::SharedPtr msg);
 
 /** \brief Convert an IMU Command sent as a ROS message into CAN messages.
+ *
+ * Uses Z-up axis system:
+ * +x = forward,
+ * +y = left,
+ * +z = up
+ *
+ * roll = rotation around X axis
+ * pitch = rotation around Y axis
+ * yaw = rotation around Z axis
+ * longitudinal = +/- X axis
+ * lateral = +/- Y axis
+ * vertical = +/- Z axis
+ *
+ * Note:
+ * Yaw/Pitch/Roll commands are received in
+ * Z-down orientation & converted to Z-up
+ *
  * \param[in] msg The message to send over CAN.
  */
-  void recvImuCmd(const ImuCmd::SharedPtr msg);
+  void recvImuCmd(const Imu::SharedPtr msg);
 
 /** \brief Convert a Misc. Command sent as a ROS message into a CAN message.
  * \param[in] msg The message to send over CAN.
@@ -322,9 +342,17 @@ private:
  */
   void recvSteeringCmd(const SteeringCmd::SharedPtr msg);
 
-  rclcpp::TimerBase::SharedPtr timer_;
+  // Time-related variables
+  rclcpp::TimerBase::SharedPtr timer_200ms;
+  rclcpp::TimerBase::SharedPtr timer_10ms_;
   rclcpp::Clock m_clock;
   static constexpr int64_t CLOCK_1_SEC = 1000;  // duration in milliseconds
+  static constexpr double NSEC_TO_MSEC = 1000.0F;  // convert nanoseconds to milliseconds
+  static constexpr double IMU_TIMEOUT_MSEC = 15.0F;  // 15 ms
+
+  /* These timestamps are saved to detect timeouts
+   */
+  rclcpp::Time t_stamp_last_imu_cmd{};
 
   // Parameters from launch
   std::string dbw_dbc_file_;
@@ -337,7 +365,7 @@ private:
 
   bool m_seen_imu2_rpt{false};
 
-  // Other useful variables
+  // Other useful items
 
   // Constants
   static constexpr double DEG_TO_RAD = M_PI / 180.0F;
@@ -500,6 +528,14 @@ private:
     const rclcpp::Time stamp,
     const WheelSpeedReport wheels);
 
+  /** \brief Scale a message value to a real value using gain & offset
+   * \param[in] in_val input value
+   * \param[in] gain gain to apply
+   * \param[in] offset offset to apply
+   * \returns the scaled value as a double
+   */
+  double applyScaling(uint32_t in_val, double gain, double offset);
+
   // Licensing
   std::string vin_;
 
@@ -522,7 +558,7 @@ private:
   rclcpp::Subscription<BrakeCmd>::SharedPtr sub_brake_;
   rclcpp::Subscription<GearCmd>::SharedPtr sub_gear_;
   rclcpp::Subscription<GlobalEnableCmd>::SharedPtr sub_global_enable_;
-  rclcpp::Subscription<ImuCmd>::SharedPtr sub_imu_;
+  rclcpp::Subscription<Imu>::SharedPtr sub_imu_;
   rclcpp::Subscription<MiscCmd>::SharedPtr sub_misc_;
   rclcpp::Subscription<SteeringCmd>::SharedPtr sub_steering_;
 
