@@ -1243,10 +1243,10 @@ void RaptorDbwCAN::recvImuCmd(const Imu::SharedPtr msg)
     rclcpp::Time curr_time = m_clock.now();
     double latency_msec = 0.0F;
 
-    if (curr_time > msg->header.stamp) { // Check if header time is valid
-      rclcpp::Duration latency_nsec = curr_time - msg->header.stamp;
-      latency_msec = latency_nsec.nanoseconds() / NSEC_TO_MSEC;
-    }
+//    if (curr_time > msg->header.stamp) { // Check if header time is valid
+//      rclcpp::Duration latency_nsec = curr_time - msg->header.stamp;
+//      latency_msec = latency_nsec.nanoseconds() / NSEC_TO_MSEC;
+//    }
 
     msg_rotate->GetSignal("AngularRateMeasurementLatency")->SetResult(latency_msec);
 
